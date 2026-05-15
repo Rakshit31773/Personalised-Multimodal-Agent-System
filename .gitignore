@@ -54,3 +54,4 @@ eval_outputs/
 .env.example
 notes/
 CLAUDE.md
+docs/

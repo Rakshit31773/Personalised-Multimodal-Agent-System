@@ -52,5 +52,10 @@ def initial_state(query: str) -> AgentState:
         user_profile={},
         tool_calls_count=0,
         start_time=time.time(),
-        token_usage={"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0},
+        token_usage={
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+        },
     )

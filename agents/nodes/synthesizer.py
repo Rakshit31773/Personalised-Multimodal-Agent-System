@@ -98,6 +98,9 @@ def synthesizer_node(state: AgentState, llm_client: anthropic.Anthropic) -> dict
     token_usage["cache_read_tokens"] = token_usage.get("cache_read_tokens", 0) + getattr(
         usage, "cache_read_input_tokens", 0
     )
+    token_usage["cache_creation_tokens"] = token_usage.get("cache_creation_tokens", 0) + getattr(
+        usage, "cache_creation_input_tokens", 0
+    )
 
     return {
         "answer": answer,

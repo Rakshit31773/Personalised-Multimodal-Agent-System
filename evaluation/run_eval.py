@@ -1,8 +1,9 @@
-"""Run the full evaluation across all 5 system variants × 12 benchmark queries.
+"""Run the full evaluation across all 5 system variants x 12 benchmark queries.
 
 Usage:
     python -m evaluation.run_eval --persist-dir ./chroma_db
     python -m evaluation.run_eval --variant E --family FACTUAL
+    python -m evaluation.run_eval --runs 5 # repeat 5x, report mean ± std
 """
 
 from __future__ import annotations
@@ -43,6 +44,8 @@ def _plain_llm_answer(query: str, llm_client: anthropic.Anthropic) -> dict:
         "retrieved_images": [],
         "query_type": "N/A",
         "verification_score": None,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
     }
 
 
@@ -70,6 +73,9 @@ def run_variant_on_case(
         latency = (time.time() - t0) * 1000
 
         token_usage = final_state.get("token_usage", {})
+        # Variant B is a linear pipeline with no verifier node; report None rather
+        # than the leftover initial_state default (0), which reads as a real score.
+        verification_score = None if variant == "B" else final_state.get("verification_score")
         result = {
             "answer": final_state.get("answer", ""),
             "latency_ms": latency,
@@ -78,7 +84,9 @@ def run_variant_on_case(
             "retrieved_text": final_state.get("retrieved_text", []),
             "retrieved_images": final_state.get("retrieved_images", []),
             "query_type": final_state.get("query_type", ""),
-            "verification_score": final_state.get("verification_score"),
+            "verification_score": verification_score,
+            "cache_read_tokens": token_usage.get("cache_read_tokens", 0),
+            "cache_creation_tokens": token_usage.get("cache_creation_tokens", 0),
         }
 
     retrieved_ids = extract_retrieved_ids(result)
@@ -98,6 +106,8 @@ def run_variant_on_case(
         "judge_rationale": judge_rationale,
         "latency_ms": round(result["latency_ms"], 1),
         "token_count": result["token_count"],
+        "cache_read_tokens": result["cache_read_tokens"],
+        "cache_creation_tokens": result["cache_creation_tokens"],
         "query_type_detected": result["query_type"],
         "verification_score": result["verification_score"],
     }
@@ -108,6 +118,7 @@ def run_full_evaluation(
     output_csv: str = "results/eval_results.csv",
     variants: list[str] | None = None,
     family_filter: str | None = None,
+    runs: int = 1,
 ) -> pd.DataFrame:
     from agents.graph import create_graph_for_variant
     from knowledge_base.image_store import ImageStore
@@ -132,54 +143,122 @@ def run_full_evaluation(
     run_variants = variants or VARIANTS
     test_cases = get_test_cases(family_filter)
 
-    rows = []
-    for variant in run_variants:
-        print(f"\n{'─' * 50}")
-        print(f"Running Variant {variant}...")
-        graph = create_graph_for_variant(
-            variant, text_retriever, image_retriever, hybrid_retriever, llm_client
+    # Build each variant's graph once; reuse across all repeat runs.
+    graphs = {
+        v: create_graph_for_variant(
+            v, text_retriever, image_retriever, hybrid_retriever, llm_client
         )
-        for tc in test_cases:
-            print(f"  [{tc['id']}] {tc['query'][:60]}...")
-            row = run_variant_on_case(variant, tc, graph, llm_client)
-            rows.append(row)
-            r3 = row["recall_at_3"]
-            jd = row["llm_judge_score"]
-            lt = row["latency_ms"]
-            print(f"       Recall@3={r3:.2f} | Judge={jd}/5 | {lt:.0f}ms")
+        for v in run_variants
+    }
+
+    rows = []
+    for run_idx in range(runs):
+        if runs > 1:
+            print(f"\n{'═' * 50}")
+            print(f" RUN {run_idx + 1} / {runs}")
+            print("═" * 50)
+        for variant in run_variants:
+            print(f"\n{'─' * 50}")
+            print(f"Running Variant {variant}...")
+            for tc in test_cases:
+                print(f"  [{tc['id']}] {tc['query'][:60]}...")
+                row = run_variant_on_case(variant, tc, graphs[variant], llm_client)
+                row["run_index"] = run_idx
+                rows.append(row)
+                r3 = row["recall_at_3"]
+                jd = row["llm_judge_score"]
+                lt = row["latency_ms"]
+                print(f"       Recall@3={r3:.2f} | Judge={jd}/5 | {lt:.0f}ms")
 
     df = pd.DataFrame(rows)
 
     Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_csv, index=False)
-    print(f"\nResults saved to {output_csv}")
+    print(f"\nRaw per-run results saved to {output_csv}")
 
-    print_results_table(df)
+    if runs > 1:
+        summary = aggregate_runs(df)
+        summary_csv = str(
+            Path(output_csv).with_name(
+                Path(output_csv).stem + "_summary" + Path(output_csv).suffix
+            )
+        )
+        summary.to_csv(summary_csv, index=False)
+        print(f"Per-query mean ± std summary saved to {summary_csv}")
+
+    print_results_table(df, runs=runs)
     return df
 
 
-def print_results_table(df: pd.DataFrame) -> None:
-    print(f"\n{'=' * 60}")
-    print("RECALL@3 by Variant × Family")
-    print("=" * 60)
-    pivot_recall = df.pivot_table(
-        values="recall_at_3", index="family", columns="variant", aggfunc="mean"
-    )
-    print(pivot_recall.round(2).to_string())
+# Numeric columns that vary run-to-run and are worth aggregating.
+_METRIC_COLS = [
+    "recall_at_3",
+    "llm_judge_score",
+    "latency_ms",
+    "token_count",
+    "cache_read_tokens",
+    "cache_creation_tokens",
+    "verification_score",
+]
+
+
+def aggregate_runs(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse repeat runs into per-(variant, query) mean and std for each metric.
+
+    Each (variant, query_id) group holds exactly `runs` rows — one per repeat —
+    so the std here is the clean run-to-run variability for that query.
+    """
+    n_runs = df["run_index"].nunique()
+    numeric = df.copy()
+    numeric[_METRIC_COLS] = numeric[_METRIC_COLS].apply(pd.to_numeric, errors="coerce")
+    grouped = numeric.groupby(["variant", "query_id", "family"], sort=False)
+    out = grouped[_METRIC_COLS].agg(["mean", "std"])
+    out.columns = [f"{col}_{stat}" for col, stat in out.columns]
+    out.insert(0, "n_runs", n_runs)
+    return out.reset_index()
+
+
+def _family_table(df: pd.DataFrame, value: str, runs: int, decimals: int = 2) -> str:
+    """Family × variant table. With repeat runs, cells show mean ± std, where the
+    std is taken across the per-run family means (i.e. run-to-run noise)."""
+    per_run = df.groupby(["run_index", "family", "variant"])[value].mean().reset_index()
+    mean = per_run.pivot_table(values=value, index="family", columns="variant", aggfunc="mean")
+    if runs <= 1:
+        return mean.round(decimals).to_string()
+    std = per_run.pivot_table(values=value, index="family", columns="variant", aggfunc="std")
+    combined = mean.round(decimals).astype(str) + " ± " + std.round(decimals).astype(str)
+    return combined.to_string()
+
+
+def _variant_table(df: pd.DataFrame, values: list[str], runs: int) -> str:
+    """Per-variant efficiency table. With repeat runs, cells show mean ± std taken
+    across the per-run variant means."""
+    per_run = df.groupby(["run_index", "variant"])[values].mean()
+    mean = per_run.groupby("variant").mean()
+    if runs <= 1:
+        return mean.round(1).to_string()
+    std = per_run.groupby("variant").std()
+    combined = mean.round(1).astype(str) + " ± " + std.round(1).astype(str)
+    return combined.to_string()
+
+
+def print_results_table(df: pd.DataFrame, runs: int = 1) -> None:
+    suffix = f"  (mean ± std over {runs} runs)" if runs > 1 else ""
 
     print(f"\n{'=' * 60}")
-    print("LLM JUDGE SCORE (1-5) by Variant × Family")
+    print(f"RECALL@3 by Variant × Family{suffix}")
     print("=" * 60)
-    pivot_judge = df.pivot_table(
-        values="llm_judge_score", index="family", columns="variant", aggfunc="mean"
-    )
-    print(pivot_judge.round(2).to_string())
+    print(_family_table(df, "recall_at_3", runs))
 
     print(f"\n{'=' * 60}")
-    print("EFFICIENCY by Variant (mean latency ms, mean tokens)")
+    print(f"LLM JUDGE SCORE (1-5) by Variant × Family{suffix}")
     print("=" * 60)
-    efficiency = df.groupby("variant")[["latency_ms", "token_count"]].mean().round(1)
-    print(efficiency.to_string())
+    print(_family_table(df, "llm_judge_score", runs))
+
+    print(f"\n{'=' * 60}")
+    print(f"EFFICIENCY by Variant — latency ms, tokens{suffix}")
+    print("=" * 60)
+    print(_variant_table(df, ["latency_ms", "token_count"], runs))
 
 
 def main() -> None:
@@ -205,13 +284,23 @@ def main() -> None:
         choices=["FACTUAL", "CROSS_MODAL", "ANALYTICAL", "CONVERSATIONAL"],
         help="Restrict to a specific query family",
     )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        help="Repeat the whole evaluation N times and report mean ± std (default: 1)",
+    )
     args = parser.parse_args()
+
+    if args.runs < 1:
+        parser.error("--runs must be >= 1")
 
     run_full_evaluation(
         persist_dir=args.persist_dir,
         output_csv=args.output,
         variants=args.variant,
         family_filter=args.family,
+        runs=args.runs,
     )
 
 

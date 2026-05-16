@@ -179,9 +179,7 @@ def run_full_evaluation(
     if runs > 1:
         summary = aggregate_runs(df)
         summary_csv = str(
-            Path(output_csv).with_name(
-                Path(output_csv).stem + "_summary" + Path(output_csv).suffix
-            )
+            Path(output_csv).with_name(Path(output_csv).stem + "_summary" + Path(output_csv).suffix)
         )
         summary.to_csv(summary_csv, index=False)
         print(f"Per-query mean ± std summary saved to {summary_csv}")

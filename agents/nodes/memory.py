@@ -8,14 +8,6 @@ from agents.state import AgentState
 
 USER_PROFILE_PATH = Path("data/user_profile.json")
 
-_ALLERGY_PATTERNS = [
-    (r"allergic to (\w+)", 1),
-    (r"i don['’]t eat (\w+)", 1),
-    (r"no (\w+)", 1),
-    (r"i['’]m vegan", None),
-    (r"i['’]m vegetarian", None),
-]
-
 _CUISINE_PATTERN = re.compile(r"(?:love|prefer|like|favourite|favorite)\s+(\w+)\s+food", re.I)
 
 

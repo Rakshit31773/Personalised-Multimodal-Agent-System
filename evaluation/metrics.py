@@ -33,14 +33,6 @@ def compute_recall_at_k(
     return len(top_k & relevant_set) / len(relevant_set)
 
 
-def compute_mrr(retrieved_ids: list[str], relevant_ids: list[str]) -> float:
-    relevant_set = set(relevant_ids)
-    for i, rid in enumerate(retrieved_ids, 1):
-        if rid in relevant_set:
-            return 1.0 / i
-    return 0.0
-
-
 def compute_llm_judge_score(
     query: str,
     answer: str,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from agents.state import initial_state
-from evaluation.metrics import compute_mrr, compute_recall_at_k, extract_retrieved_ids
+from evaluation.metrics import compute_recall_at_k, extract_retrieved_ids
 
 
 def test_recall_at_k_perfect() -> None:
@@ -32,18 +32,6 @@ def test_recall_at_k_empty_retrieved() -> None:
 
 def test_recall_at_k_empty_relevant() -> None:
     assert compute_recall_at_k(["R01"], [], k=3) == 0.0
-
-
-def test_mrr_first_hit() -> None:
-    assert compute_mrr(["R01", "R02"], ["R01"]) == 1.0
-
-
-def test_mrr_second_hit() -> None:
-    assert compute_mrr(["R02", "R01"], ["R01"]) == pytest.approx(0.5)
-
-
-def test_mrr_no_hit() -> None:
-    assert compute_mrr(["R03", "R04"], ["R01"]) == 0.0
 
 
 def test_extract_retrieved_ids_from_fused() -> None:

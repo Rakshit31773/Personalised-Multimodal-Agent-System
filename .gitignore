@@ -51,7 +51,6 @@ htmlcov/
 results/
 eval_outputs/
 
-.env.example
 notes/
 CLAUDE.md
 docs/

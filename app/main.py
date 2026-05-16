@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def load_dependencies() -> tuple[Any, Any, Any, Any]:
+def load_dependencies(persist_dir: str | None = None) -> tuple[Any, Any, Any, Any]:
     import anthropic
 
     from knowledge_base.image_store import ImageStore
@@ -30,7 +30,7 @@ def load_dependencies() -> tuple[Any, Any, Any, Any]:
     from retrieval.image_retriever import ImageRetriever
     from retrieval.text_retriever import TextRetriever
 
-    persist_dir = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
+    persist_dir = persist_dir or os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
     embed_model = os.getenv("TEXT_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
     clip_model = os.getenv("CLIP_MODEL", "openai/clip-vit-base-patch32")
     top_k = int(os.getenv("TOP_K", "5"))
@@ -143,7 +143,7 @@ def main() -> None:
     parser.add_argument("--verbose", action="store_true", help="Show metadata after each response")
     args = parser.parse_args()
 
-    text_r, image_r, hybrid_r, llm_client = load_dependencies()
+    text_r, image_r, hybrid_r, llm_client = load_dependencies(persist_dir=args.persist_dir)
 
     from agents.graph import create_graph_for_variant
 
